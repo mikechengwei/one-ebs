@@ -160,7 +160,7 @@ func MakeNetwork() *Network {
 			}
 		}
 	}()
-
+	laji
 	return rn
 }
 

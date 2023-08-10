@@ -65,11 +65,10 @@ type Raft struct {
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// Your code here (2A).
-	return term, isleader
+	return rf.state.currentTerm, rf.state.status == Leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -123,17 +122,50 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	term         int
+	candidateId  *int
+	lastLogIndex int
+	lastLogTerm  int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
+	term        int
+	voteGranted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+
+	if args.term < rf.state.currentTerm {
+		// 如果请求的term小于自身的term，就忽略，年龄大说了算
+		reply.voteGranted = false
+		reply.term = rf.state.currentTerm
+		return
+	}
+	if args.term > rf.state.currentTerm {
+		// 自己降低为follower
+		rf.state.currentTerm = args.term
+		rf.state.status = Follower
+		rf.state.votedFor = nil
+		rf.state.votesNumber = 0
+		rf.persist()
+	}
+
+	if (args.lastLogTerm > rf.state.log[len(rf.state.log)-1].Term || (args.lastLogTerm == rf.state.log[len(rf.state.log)-1].Term && args.lastLogIndex >= len(rf.state.log)-1)) &&
+		(rf.state.votedFor == nil || args.candidateId == rf.state.votedFor) {
+		// 发出投票
+		reply.voteGranted = true
+		rf.state.votedFor = args.candidateId
+	} else {
+		reply.voteGranted = false
+	}
+	reply.term = rf.state.currentTerm
+	rf.mu.Unlock()
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -165,6 +197,27 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	if reply.voteGranted && reply.term == rf.state.currentTerm && rf.state.status == Candidate {
+		rf.state.votesNumber++
+		if rf.state.votesNumber > len(rf.peers)/2 {
+			// 超过半数
+			rf.state.status = Leader
+			for index := 0; index < len(rf.peers); index++ {
+				rf.state.matchIndex[index] = 0
+				rf.state.nextIndex[index] = len(rf.state.log)
+			}
+		}
+	}
+
+	if reply.term > args.lastLogTerm {
+		// 如果向对方发出投票，对方的term要大于自己
+		rf.state.status = Follower
+		rf.state.currentTerm = reply.term
+		rf.state.votesNumber = 0
+		rf.state.votedFor = nil
+		rf.persist()
+	}
+	rf.mu.Unlock()
 	return ok
 }
 
@@ -239,12 +292,48 @@ func Make(peers []*rpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
-
+	// 2A阶段初始化
+	rf.state.currentTerm = 0
+	rf.state.votedFor = nil
+	rf.state.log = []LogEntry{}
+	rf.state.status = Follower
+	rf.state.commitIndex = 0
+	rf.state.lastApplied = 0
+	rf.state.nextIndex = make([]int, len(rf.peers))
+	rf.state.matchIndex = make([]int, len(rf.peers))
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
 	return rf
+}
+
+func (rf *Raft) sendHeartbeat() {
+	for {
+		currentTerm, isLeader := rf.GetState()
+		rf.mu.Lock()
+		if isLeader {
+			for index := 0; index < len(rf.peers); index++ {
+				if index != rf.me {
+					var entries []LogEntry
+					if rf.state.nextIndex[index] > len(rf.state.log)-1 {
+						entries = []LogEntry{}
+					} else {
+						entries = rf.state.log[rf.state.nextIndex[index]:]
+					}
+					appendEntriesArgs := AppendEntriesArgs{
+						Term:        currentTerm,
+						LeaderId:    rf.me,
+						Entries:     entries,
+						PrevLogTerm: rf.state.log[rf.state.nextIndex[index]-1].Term, PrevLogIndex: rf.state.nextIndex[index] - 1, LeaderCommit: rf.state.commitIndex}
+					appendEntriesReply := new(AppendEntriesReply)
+					//go rf.sendAppendEntries(i, &appendEntriesArgs, appendEntriesReply)
+
+				}
+			}
+		}
+		rf.mu.Unlock()
+		time.Sleep(time.Duration(5) * time.Millisecond)
+	}
 }

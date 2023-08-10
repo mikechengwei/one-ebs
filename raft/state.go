@@ -1,30 +1,50 @@
 package raft
 
+type Status int
+
+const (
+	Leader Status = iota
+	Follower
+	Candidate
+)
+
 type State struct {
-	currentTerm int32
-	votedFor    int32
-	log         []string
-	commitIndex int32
-	lastApplied int32
-	nextIndex   []int32
-	matchIndex  []int32
+	currentTerm int
+	votedFor    *int
+	log         []LogEntry
+	commitIndex int
+	lastApplied int
+	nextIndex   []int
+	matchIndex  []int
+	status      Status
+	votesNumber int
 }
 
 type LogEntry struct {
+	Command interface{}
+	Term    int
 }
 
 type AppendEntry struct {
-	term         int32
-	leaderId     int32
-	preLogIndex  int32
-	prevLogTerm  int32
+	term         int
+	leaderId     int
+	preLogIndex  int
+	prevLogTerm  int
 	entries      []LogEntry
-	leaderCommit int32
+	leaderCommit int
 }
 
-type RequestVote struct {
-	term         int32
-	candidateId  int32
-	lastLogIndex int32
-	lastLogTerm  int32
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []LogEntry
+	LeaderCommit int
+}
+type AppendEntriesReply struct {
+	Term          int
+	Success       bool
+	ConflictTerm  int
+	ConflictIndex int
 }
